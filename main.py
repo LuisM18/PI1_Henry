@@ -1,11 +1,13 @@
 import pandas as pd
 import glob
 import numpy as np
+import re
 from dask import  dataframe as dd
 from dask import delayed
+from surprise import dump
 
 
-class proceso_ETL:    
+class Proceso_ETL:    
     
     def cargar_ratings():
         listacsv = glob.glob('**/[1-8].csv', recursive=True)
@@ -55,88 +57,129 @@ class proceso_ETL:
             df = df.apply(lambda x: x.astype(str).str.lower())
             df.duration_type = df.duration_type.replace("seasons","season")
 
-            drating = {'all':'g','nr':'unrated','tv-nr':'unrated','tv-g':'g','pg-13':'13+','16':'16+', 
-                    'ages_16_':'16+', 'ages_18_':'18+', 'all_ages':'g','not_rate':'unrated', 
-                    'not rated':'unrated', 'tv-y7-fv':'7+','ur':'unrated','nc-17':'18+','tv-pg':'g',
-                    'tv-ma':'g','tv-14':'13+','tv-pg':'pg','tv-y7':'7+'}
-            df.rating = df.rating.replace(drating)
-            
             peliculas = pd.concat([peliculas,df],axis=0)
 
         peliculas.date_added = pd.to_datetime(peliculas.date_added,format = "%Y-%m-%d")
         peliculas.release_year = peliculas.release_year.astype('int')
         peliculas.duration_int = peliculas.duration_int.astype('int')
+        peliculas.title = peliculas.title.str.strip()
 
         return peliculas
+    
 
-peliculas = proceso_ETL.cargar_peliculas()
-ratings = proceso_ETL.cargar_ratings()
+class API:    
+  
+    def __init__(self,peliculas,ratings,modelo): 
+        self.peliculas = peliculas
+        self.ratings = ratings
+        self.modelo = modelo       
 
-from fastapi import FastAPI
+    def get_max_duration(self,year: int,platform: str,duration_type: str):
+        '''Función para obtener pelicula con máxima duración con filtros de
+        año, plataforma y tipo de audiovisual(Pelicula o Serie) '''
+        platform = platform[0]
+        if platform not in 'adhn':
+            return 'El campo platform solo admite los valores amazon,disney,hulu o netflix'
+        
+        if duration_type == 'min':
+            df = self.peliculas[(self.peliculas.id.str.startswith(platform)) & (self.peliculas.type== 'movie') & (self.peliculas.release_year == year)] 
+            
+        elif duration_type == 'season':
+            df = self.peliculas[(self.peliculas.id.str.startswith(platform)) & (self.peliculas.type== 'tv show') & (self.peliculas.release_year == year)]
+        else: 
+            return 'El campo duration_type solo admite los valores "min" o "season"'
 
-app = FastAPI(title="Sistema de recomendacion de peliculas",
-                description= "hecho por Luis Miguel Vargas")
+        idx = df.duration_int.idxmax()        
+        return df.title[idx] 
+        
+
+
+    def get_score_count(self,platform,scored: float,year: int):
+        '''Función para obtener el número de  self.peliculas con un puntaje mayor a un valor especifico
+        en un año determinado '''
+        platform = platform[0]
+        if platform not in 'adhn':
+            return 'El campo platform solo admite los valores amazon,disney,hulu o netflix'
+        
+        ids = self.peliculas[(self.peliculas.id.str.startswith(platform)) & (self.peliculas.release_year == year)].id.values
+        muestra = self.ratings.sample(frac=0.01,random_state=0)
+        rating = muestra.groupby(by='movieId').rating.mean()
+        rating = rating[ids]
+                
+        
+        return rating.where(rating > scored).count()
+
+
+    def get_platform_count(self,platform: str):
+        '''Función para obtener el número de self.peliculas disponibles de una plataforma
+        '''
+        platform = platform[0]
+        if platform not in 'adhn':
+            return 'El campo platform solo admite los valores amazon,disney,hulu o netflix'
+        
+        return self.peliculas[self.peliculas.id.str.startswith(platform)].id.count()
+
+
+    def get_actor(self,platform,year: int):
+        ''' Función para obtener el actor que mas interpretaciones ha realizado en una plataforma y año especifico'''
+        platform = platform[0]
+        if platform not in 'adhn':
+            return 'El campo platform solo admite los valores amazon,disney,hulu o netflix'
+        
+        actores = self.peliculas[(self.peliculas.id.str.startswith(platform)) & (self.peliculas.release_year == year)].cast
+        actores = actores.str.split(", ").explode()
+        actores = actores.value_counts().drop(labels='nan')
+
+        return actores.index[0]
+
+
+    def get_recomendation(self,userid: int,title: str):
+        
+        title = title.lower()
+        if re.search("^\d$",title[2]) != None:
+            movieid = title
+            if movieid not in self.peliculas.id.values:
+                return 'No existe el título especificado'
+        else:
+            if title not in self.peliculas.title.values:
+                return 'No existe el título especificado'
+            movieid = self.peliculas.id.where(self.peliculas.title == title)
+
+        pred = self.modelo.predict(userid,movieid).est    
+
+        return True if pred>3.5 else False
+
+   
+peliculas = Proceso_ETL.cargar_peliculas()
+ratings = Proceso_ETL.cargar_ratings()
+pred,modelo = dump.load('modelo_svd')
+
+api = API(peliculas,ratings,modelo) 
+
+app = FastAPI(title="API de peliculas",
+                description= "API con información sobre peliculas y programas de televisión y sistema de recomendación para un usuario y titulo dado")
+
 
 @app.get('/')
-def docs():
-    return app.get("Nada por ahora")
-   
+def root():
+    return "API de PI1 de HenryLabs. Mas informacion en /docs"
 
-@app.get('/duracion')
+@app.get('/max_duration')
 def get_max_duration(year: int,platform: str,duration_type: str):
-    '''Función para obtener pelicula con máxima duración con filtros de
-    año, plataforma y tipo de audiovisual(Pelicula o Serie) '''
-    platform = platform[0]
-    if platform not in 'adhn':
-        return 'El campo platform solo admite los valores amazon,disney,hulu o netflix'
+    return api.get_max_duration(year,platform,duration_type)
     
-    if duration_type == 'min':
-        df = peliculas[(peliculas.id.str.startswith(platform)) & (peliculas.type== 'movie') & (peliculas.release_year == year)] 
-        
-    elif duration_type == 'season':
-        df = peliculas[(peliculas.id.str.startswith(platform)) & (peliculas.type== 'tv show') & (peliculas.release_year == year)]
-    else: 
-        return 'El campo duration_type solo admite los valores "min" o "season"'
-
-    idx = df.duration_int.idxmax()        
-    return df.title[idx] 
-    
-
-@app.get('/peliculas_por_puntaje')
+@app.get('/get_score_count')
 def get_score_count(platform,scored: float,year: int):
-    '''Función para obtener el número de  peliculas con un puntaje mayor a un valor especifico
-    en un año determinado '''
-    platform = platform[0]
-    if platform not in 'adhn':
-        return 'El campo platform solo admite los valores amazon,disney,hulu o netflix'
-    
-    ids = peliculas[(peliculas.id.str.startswith(platform)) & (peliculas.release_year == year)].id.values
+    return api.get_score_count(platform,scored,year)
 
-    rating = ratings.groupby(by='movieId').rating.mean()
-    rating = rating[ids]
-            
-    
-    return rating.where(rating > scored).count()
-
-@app.get('/peliculas_plataforma')
+@app.get('/get_platform_count')
 def get_platform_count(platform: str):
-    '''Función para obtener el número de peliculas disponibles de una plataforma
-    '''
-    platform = platform[0]
-    if platform not in 'adhn':
-        return 'El campo platform solo admite los valores amazon,disney,hulu o netflix'
-    
-    return peliculas[peliculas.id.str.startswith(platform)].id.count()
+    return api.get_platform_count(platform)
 
-@app.get('/actor')
+@app.get('/get_actor')
 def get_actor(platform,year: int):
-    ''' Función para obtener el actor que mas interpretaciones ha realizado en una plataforma y año especifico'''
-    platform = platform[0]
-    if platform not in 'adhn':
-        return 'El campo platform solo admite los valores amazon,disney,hulu o netflix'
-    
-    actores = peliculas[(peliculas.id.str.startswith(platform)) & (peliculas.release_year == year)].cast
-    actores = actores.str.split(", ").explode()
-    actores = actores.value_counts().drop(labels='nan')
+    return api.get_actor(platform,year)
 
-    return actores.index[0]
+@app.get('/get_recommendation')
+def get_recomendation(userid: int,title: str):
+    return api.get_recomendation(userid,title)
