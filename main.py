@@ -152,7 +152,10 @@ class API:
    
 peliculas = Proceso_ETL.cargar_peliculas()
 ratings = Proceso_ETL.cargar_ratings()
+
 pred,modelo = dump.load('modelo_svd')
+
+
 
 api = API(peliculas,ratings,modelo) 
 

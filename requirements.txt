@@ -3,4 +3,6 @@ uvicorn
 pandas
 numpy
 dask
+surprise
+
 
