@@ -5,7 +5,7 @@ import re
 from dask import  dataframe as dd
 from dask import delayed
 from surprise import dump
-
+from fastapi import FastAPI
 
 class Proceso_ETL:    
     
@@ -75,8 +75,7 @@ class API:
         self.modelo = modelo       
 
     def get_max_duration(self,year: int,platform: str,duration_type: str):
-        '''Función para obtener pelicula con máxima duración con filtros de
-        año, plataforma y tipo de audiovisual(Pelicula o Serie) '''
+
         platform = platform[0]
         if platform not in 'adhn':
             return 'El campo platform solo admite los valores amazon,disney,hulu o netflix'
@@ -95,15 +94,14 @@ class API:
 
 
     def get_score_count(self,platform,scored: float,year: int):
-        '''Función para obtener el número de  self.peliculas con un puntaje mayor a un valor especifico
-        en un año determinado '''
+
         platform = platform[0]
         if platform not in 'adhn':
             return 'El campo platform solo admite los valores amazon,disney,hulu o netflix'
         
         ids = self.peliculas[(self.peliculas.id.str.startswith(platform)) & (self.peliculas.release_year == year)].id.values
-        muestra = self.ratings.sample(frac=0.01,random_state=0)
-        rating = muestra.groupby(by='movieId').rating.mean()
+        #muestra = self.ratings.sample(frac=0.01,random_state=0)
+        rating = self.ratings.groupby(by='movieId').rating.mean()
         rating = rating[ids]
                 
         
@@ -111,8 +109,7 @@ class API:
 
 
     def get_platform_count(self,platform: str):
-        '''Función para obtener el número de self.peliculas disponibles de una plataforma
-        '''
+
         platform = platform[0]
         if platform not in 'adhn':
             return 'El campo platform solo admite los valores amazon,disney,hulu o netflix'
@@ -121,7 +118,7 @@ class API:
 
 
     def get_actor(self,platform,year: int):
-        ''' Función para obtener el actor que mas interpretaciones ha realizado en una plataforma y año especifico'''
+        
         platform = platform[0]
         if platform not in 'adhn':
             return 'El campo platform solo admite los valores amazon,disney,hulu o netflix'
@@ -152,10 +149,7 @@ class API:
    
 peliculas = Proceso_ETL.cargar_peliculas()
 ratings = Proceso_ETL.cargar_ratings()
-
 pred,modelo = dump.load('modelo_svd')
-
-
 
 api = API(peliculas,ratings,modelo) 
 
@@ -169,18 +163,27 @@ def root():
 
 @app.get('/max_duration')
 def get_max_duration(year: int,platform: str,duration_type: str):
+    '''Función para obtener pelicula con máxima duración con filtros de
+    año, plataforma y tipo de audiovisual(Pelicula o Serie) '''
+
     return api.get_max_duration(year,platform,duration_type)
     
 @app.get('/get_score_count')
 def get_score_count(platform,scored: float,year: int):
+    '''Función para obtener el número de  self.peliculas con un puntaje mayor a un valor especifico
+    en un año determinado '''
+
     return api.get_score_count(platform,scored,year)
 
 @app.get('/get_platform_count')
 def get_platform_count(platform: str):
+    '''Función para obtener el número de self.peliculas disponibles de una plataforma
+    '''
     return api.get_platform_count(platform)
 
 @app.get('/get_actor')
 def get_actor(platform,year: int):
+    ''' Función para obtener el actor que mas interpretaciones ha realizado en una plataforma y año especifico'''
     return api.get_actor(platform,year)
 
 @app.get('/get_recommendation')
